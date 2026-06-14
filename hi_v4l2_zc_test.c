@@ -277,99 +277,6 @@ static const struct file_operations zc_run_fops = {
 	.write	= zc_run_write,
 };
 
-/*
- * De-tile geometry probe: feed IMAGE_TileTo2D (the vendor de-tiler) a SYNTHETIC
- * input where each byte encodes its own offset, capture the LINEAR output. Then
- * output[y*w+x] = in[src_offset(x,y)] = (pass ? src>>8 : src) & 0xFF, so two
- * passes recover the exact src offset for every linear (x,y) -> the precise
- * tile geometry, WITHOUT decoding video or touching the (wedge-prone) saveyuv.
- *   echo "W H stride is1d pass" > /sys/kernel/debug/hi_v4l2_zc/probe
- *   cat /sys/kernel/debug/hi_v4l2_zc/out   # W*H bytes
- */
-struct dt_param { u8 *y8, *yn, *c8, *cn; s32 rbd, sbd; u32 is1d, stride; };
-struct dt_addr  { u8 *y8, *yn, *c8, *cn; };
-extern void IMAGE_TileTo2D(struct dt_param *p, u32 w, u32 h, struct dt_addr *a);
-
-static u8 *g_probe_out;
-static size_t g_probe_len;
-
-static ssize_t dt_probe_write(struct file *f, const char __user *ubuf,
-			      size_t cnt, loff_t *ppos)
-{
-	char kbuf[96];
-	u32 w = 128, h = 32, stride = 128, is1d = 0, pass = 0, plane = 0, i, ah, insz, outsz;
-	struct dt_param p;
-	struct dt_addr a;
-	u8 *iny, *inc, *outy, *outc, *pat, *outp;
-
-	if (cnt == 0 || cnt >= sizeof(kbuf))
-		return -EINVAL;
-	if (copy_from_user(kbuf, ubuf, cnt))
-		return -EFAULT;
-	kbuf[cnt] = '\0';
-	sscanf(kbuf, "%u %u %u %u %u %u", &w, &h, &stride, &is1d, &pass, &plane);
-
-	ah = ALIGN(h, 16);
-	outsz = 1u << 20;	/* read 1 MB of outy to locate the C region (after Y) */
-	/* over-allocate generously: IMAGE_TileTo2D's real addressing exceeds the
-	 * naive 64x16 model (it OOB-crashed at exact sizes). 8 MB >> any small-dim
-	 * tile span; the input is FULLY patterned so even "beyond" reads land on
-	 * valid pattern bytes and reveal the true src offset. */
-#define DT_BIG (32u << 20)
-	insz = DT_BIG;
-	iny = vmalloc(insz); inc = vmalloc(insz);
-	outy = vmalloc(insz); outc = vmalloc(insz);
-	if (!iny || !inc || !outy || !outc) {
-		vfree(iny); vfree(inc); vfree(outy); vfree(outc);
-		return -ENOMEM;
-	}
-	pat  = plane ? inc : iny;	/* pattern the probed plane's INPUT */
-	outp = outy;	/* IMAGE_TileTo2D writes BOTH Y and C into the a.y8 buffer
-			 * (it recomputes a.c8 = a.y8 + Ysize internally); for the C
-			 * probe the chroma lands in outy AFTER the (zeroed) Y region. */
-	for (i = 0; i < insz; i++)
-		pat[i] = (i >> (pass * 8)) & 0xFF;	/* pass 0/1/2 = byte 0/1/2 */
-	memset(plane ? iny : inc, 0, insz);
-	memset(outy, 0, insz);
-	memset(outc, 0, insz);
-	(void)ah;
-
-	memset(&p, 0, sizeof(p));
-	memset(&a, 0, sizeof(a));
-	p.y8 = iny; p.c8 = inc; p.rbd = 8; p.sbd = 8;
-	p.is1d = is1d; p.stride = stride;
-	a.y8 = outy; a.c8 = outc;
-	IMAGE_TileTo2D(&p, w, h, &a);
-
-	vfree(g_probe_out);
-	g_probe_out = vmalloc(outsz);
-	if (g_probe_out) {
-		memcpy(g_probe_out, outp, outsz);
-		g_probe_len = outsz;
-	} else {
-		g_probe_len = 0;
-	}
-	pr_info("hi-v4l2 dtprobe: w=%u h=%u stride=%u is1d=%u pass=%u -> %u bytes\n",
-		w, h, stride, is1d, pass, g_probe_len ? outsz : 0);
-
-	vfree(iny); vfree(inc); vfree(outy); vfree(outc);
-	return cnt;
-}
-
-static ssize_t dt_probe_read(struct file *f, char __user *ubuf,
-			     size_t cnt, loff_t *ppos)
-{
-	return simple_read_from_buffer(ubuf, cnt, ppos, g_probe_out, g_probe_len);
-}
-
-static const struct file_operations dt_probe_fops = {
-	.owner = THIS_MODULE,
-	.write = dt_probe_write,
-};
-static const struct file_operations dt_out_fops = {
-	.owner = THIS_MODULE,
-	.read  = dt_probe_read,
-};
 
 int hi_zc_test_register(void)
 {
@@ -380,8 +287,6 @@ int hi_zc_test_register(void)
 		return -ENODEV;
 	}
 	debugfs_create_file("run", 0200, zc_dir, NULL, &zc_run_fops);
-	debugfs_create_file("probe", 0200, zc_dir, NULL, &dt_probe_fops);
-	debugfs_create_file("out", 0400, zc_dir, NULL, &dt_out_fops);
 	pr_info("hi-v4l2 zc: probe ready — echo <es-path> [w h] > /sys/kernel/debug/hi_v4l2_zc/run\n");
 	return 0;
 }
@@ -390,8 +295,6 @@ void hi_zc_test_unregister(void)
 {
 	debugfs_remove_recursive(zc_dir);
 	zc_dir = NULL;
-	vfree(g_probe_out);
-	g_probe_out = NULL;
 }
 
 #endif /* HI_V4L2_ZC_SELFTEST */
