@@ -43,7 +43,18 @@ static void __exit hi_v4l2_exit(void)
 	hi_dec_unregister();
 }
 
-module_init(hi_v4l2_init);
+/*
+ * Same idiom as dvb-hisi (drivers/msp/drv/dvb-hisi): late_initcall_sync works
+ * for both build kinds -- under CONFIG MODULE all *_initcall macros collapse to
+ * module_init (runs at insmod, stack already up); built-in it is initcall level
+ * 7s, which runs AFTER the msp boot init (hi_init.c HI_DRV_LoadModules @
+ * late_initcall, level 7) that does VFMW/VDEC/VPSS *_DRV_ModInit. We must run
+ * after it: the decoder probe opens the VDEC (HI_DRV_VDEC_Open -> GetFunction
+ * of VFMW/VPSS) and probes caps (HI_DRV_VDEC_GetCap), which need those
+ * subsystems already registered. Plain late_initcall (level 7) raced
+ * HI_DRV_LoadModules by link order and lost (VDEC_DRV_Open -> 0xffffffff).
+ */
+late_initcall_sync(hi_v4l2_init);
 module_exit(hi_v4l2_exit);
 
 MODULE_DESCRIPTION("Hisilicon V4L2 mem2mem video codec (decoder + encoder)");

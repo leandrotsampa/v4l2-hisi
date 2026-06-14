@@ -1459,6 +1459,12 @@ static int hi_dec_probe(struct platform_device *pdev)
 	mutex_init(&dev->dev_mutex);
 	atomic_set(&dev->num_inst, 0);
 
+	/*
+	 * Open the VDEC subsystem here (refcounted; coexists with AVServer). The
+	 * msp boot init (hi_init.c) already did VDEC_DRV_ModInit, and our
+	 * late_initcall_sync (hi_v4l2_core.c) runs after it, so the VFMW/VPSS
+	 * functions the open needs are already registered.
+	 */
 	ret = hi_vdec_hal_global_init();
 	if (ret)
 		return ret;

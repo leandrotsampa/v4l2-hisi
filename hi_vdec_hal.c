@@ -161,6 +161,15 @@ int hi_vdec_hal_global_init(void)
 
 	mutex_lock(&g_lock);
 	if (g_open_refcnt == 0) {
+		/*
+		 * Only OPEN the VDEC -- do NOT call HI_DRV_VDEC_Init. The msp boot
+		 * init (hi_init.c HI_DRV_LoadModules) already does VDEC_DRV_ModInit
+		 * (-> HI_DRV_VDEC_Init: module-register + bufmng + task); calling it
+		 * again fights that single owner. We behave like the userspace MPI:
+		 * just HI_DRV_VDEC_Open, which is refcounted (atmOpenCnt) and so
+		 * coexists with AVServer/AVPLAY. This needs VFMW/VPSS already
+		 * registered, hence late_initcall_sync ordering in hi_v4l2_core.c.
+		 */
 		ret = HI_DRV_VDEC_Open();
 		if (ret != HI_SUCCESS) {
 			pr_err("hi-v4l2: HI_DRV_VDEC_Open failed (0x%x)\n", ret);
@@ -177,6 +186,12 @@ out:
 void hi_vdec_hal_global_exit(void)
 {
 	mutex_lock(&g_lock);
+	/*
+	 * Close only -- never HI_DRV_VDEC_DeInit: the VDEC subsystem is owned by
+	 * the msp boot init (hi_init.c), not by us. DeInit would tear down the
+	 * whole VDEC module out from under AVServer/AVPLAY and the rest of the
+	 * stack. Close is the refcounted (atmOpenCnt) counterpart of our Open.
+	 */
 	if (--g_open_refcnt == 0)
 		HI_DRV_VDEC_Close();
 	if (g_open_refcnt < 0)

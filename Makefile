@@ -59,15 +59,15 @@ KBUILD_EXTRA_SYMBOLS += $(MSP_DIR)/drv/Module.symvers
 #===============================================================================
 MOD_NAME := hi_v4l2
 
-# NOTE: unlike dvb-hisi (obj-$(HI_DRV_BUILDTYPE), built-in when CFG_HI_MSP_BUILDIN=y),
-# hi_v4l2 is ALWAYS a loadable module (obj-m). It depends on the V4L2 mem2mem +
-# videobuf2 framework (v4l2-mem2mem.ko, videobuf2-*.ko) which ship as kernel
-# modules (=m) in this defconfig, so a built-in hi_v4l2 would fail to link
-# (unresolved v4l2_m2m_*/vb2_* symbols). The HI_DRV_VDEC_*/HI_DRV_VENC_* symbols
-# it also uses ARE in vmlinux (msp built-in), resolved via the kernel
-# Module.symvers during `make modules`. The parent Makefile still reaches this
-# dir through `obj-y += v4l2-hisi/`; this obj-m just makes the unit a module.
-obj-m += $(MOD_NAME).o
+# Built-in when CFG_HI_MSP_BUILDIN=y (HI_DRV_BUILDTYPE=y), like dvb-hisi.
+# Works at boot via initcall ordering: hi_v4l2_core.c registers with
+# late_initcall_sync (level 7s), which runs AFTER the msp boot init
+# (hi_init.c HI_DRV_LoadModules @ late_initcall, level 7) that does the
+# VFMW/VDEC/VPSS *_DRV_ModInit. So when our decoder probe opens the VDEC, the
+# VFMW/VPSS functions it needs are already registered. We only HI_DRV_VDEC_Open
+# (not Init/DeInit -- hi_init owns those), so we coexist with AVServer/AVPLAY.
+# Deps built-in via the VIDEO_HISI_V4L2_DEPS Kconfig stub. Build w/ CONFIG_MSP=y.
+obj-$(HI_DRV_BUILDTYPE) += $(MOD_NAME).o
 
 $(MOD_NAME)-y := hi_v4l2_core.o \
                  hi_v4l2_dec.o \
